@@ -1,0 +1,337 @@
+pipeline {
+ 
+    // ── Agent : exécution sur n'importe quel nœud Jenkins disponible
+    agent any
+ 
+    // ── Options globales du pipeline ────────────────────────────────
+    options {
+        timestamps()               // Horodatage de chaque ligne de log
+        timeout(time: 60, unit: 'MINUTES')  // Abandon si durée > 1h
+        buildDiscarder(logRotator(numToKeepStr: '20'))  // Garder 20 derniers builds
+        disableConcurrentBuilds()  // Interdit 2 builds simultanés sur la même branche
+    }
+ 
+    // ── Variables d'environnement — AUCUN secret en clair ───────────
+    environment {
+        DOCKER_REGISTRY = 'registry.internal'
+        APP_IMAGE       = "${DOCKER_REGISTRY}/monapp:${BUILD_NUMBER}"
+        SONAR_PROJECT   = 'monapp'
+        SONAR_URL       = 'http://sonarqube.internal:9000'
+ 
+        // credentials() injecte les secrets depuis Jenkins Credentials Manager
+        // Jenkins masque automatiquement les valeurs dans les logs (affichées ****)
+        DOCKER_CREDS    = credentials('docker-registry-creds')
+        SSH_STAGING     = credentials('ssh-key-staging')
+        SSH_PROD        = credentials('ssh-key-prod')
+        DB_PASSWORD     = credentials('db-prod-password')
+    }
+ 
+    // ════════════════════════════════════════════════════════════════
+    // STAGES DU PIPELINE
+    // ════════════════════════════════════════════════════════════════
+    stages {
+ 
+        // ── STAGE 1 : BUILD ─────────────────────────────────────────
+        // Déclencheur : Push ou Merge Request sur toute branche
+        // Artefact produit : fichier .jar compilé
+        // Condition de passage : build sans erreur de compilation
+        stage('Build') {
+            steps {
+                echo '=== STAGE 1 : Compilation du code source ==='
+                sh 'mvn clean package -DskipTests'
+                // -DskipTests : les tests sont exécutés dans le stage dédié
+                // L'artefact target/monapp.jar est produit ici
+            }
+        }
+ 
+        // ── STAGE 2 : TESTS UNITAIRES ────────────────────────────────
+        // Déclencheur : après build réussi
+        // Artefact produit : rapport JUnit (target/surefire-reports/)
+        // Condition de passage : couverture de code >= 80%
+        stage('Tests unitaires') {
+            steps {
+                echo '=== STAGE 2 : Exécution des tests unitaires ==='
+                sh 'mvn test'
+                // JaCoCo mesure la couverture — configuré dans pom.xml
+                pipeline {
+ 
+    // ── Agent : exécution sur n'importe quel nœud Jenkins disponible
+    agent any
+ 
+    // ── Options globales du pipeline ────────────────────────────────
+    options {
+        timestamps()               // Horodatage de chaque ligne de log
+        timeout(time: 60, unit: 'MINUTES')  // Abandon si durée > 1h
+        buildDiscarder(logRotator(numToKeepStr: '20'))  // Garder 20 derniers builds
+        disableConcurrentBuilds()  // Interdit 2 builds simultanés sur la même branche
+    }
+ 
+    // ── Variables d'environnement — AUCUN secret en clair ───────────
+    environment {
+        DOCKER_REGISTRY = 'registry.internal'
+        APP_IMAGE       = "${DOCKER_REGISTRY}/monapp:${BUILD_NUMBER}"
+        SONAR_PROJECT   = 'monapp'
+        SONAR_URL       = 'http://sonarqube.internal:9000'
+ 
+        // credentials() injecte les secrets depuis Jenkins Credentials Manager
+        // Jenkins masque automatiquement les valeurs dans les logs (affichées ****)
+        DOCKER_CREDS    = credentials('docker-registry-creds')
+        SSH_STAGING     = credentials('ssh-key-staging')
+        SSH_PROD        = credentials('ssh-key-prod')
+        DB_PASSWORD     = credentials('db-prod-password')
+    }
+ 
+    // ════════════════════════════════════════════════════════════════
+    // STAGES DU PIPELINE
+    // ════════════════════════════════════════════════════════════════
+    stages {
+ 
+        // ── STAGE 1 : BUILD ─────────────────────────────────────────
+        // Déclencheur : Push ou Merge Request sur toute branche
+        // Artefact produit : fichier .jar compilé
+        // Condition de passage : build sans erreur de compilation
+        stage('Build') {
+            steps {
+                echo '=== STAGE 1 : Compilation du code source ==='
+                sh 'mvn clean package -DskipTests'
+                // -DskipTests : les tests sont exécutés dans le stage dédié
+                // L'artefact target/monapp.jar est produit ici
+            }
+        }
+ 
+        // ── STAGE 2 : TESTS UNITAIRES ────────────────────────────────
+        // Déclencheur : après build réussi
+        // Artefact produit : rapport JUnit (target/surefire-reports/)
+        // Condition de passage : couverture de code >= 80%
+        stage('Tests unitaires') {
+            steps {
+                echo '=== STAGE 2 : Exécution des tests unitaires ==='
+                sh 'mvn test'
+                // JaCoCo mesure la couverture — configuré dans pom.xml
+                            }
+            post {
+                always {
+                    // Publie les résultats JUnit dans l'interface Jenkins
+                    junit 'target/surefire-reports/*.xml'
+                    // Publie le rapport de couverture JaCoCo
+                    jacoco(execPattern: 'target/jacoco.exec',
+                           minimumLineCoverage: '80')  // ÉCHOUE si < 80%
+                }
+            }
+        }
+ 
+        // ── STAGE 3 : ANALYSE QUALITÉ SAST — SonarQube ──────────────
+        // Déclencheur : après tests réussis
+        // Artefact produit : rapport SonarQube
+        // Condition de passage : Quality Gate = PASSED (pas de bug bloquant)
+        stage('Analyse qualité - SonarQube') {
+            steps {
+                echo '=== STAGE 3 : Analyse statique SAST avec SonarQube ==='
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=${SONAR_PROJECT} \
+                            -Dsonar.host.url=${SONAR_URL} \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                    """
+                }
+                // FAIL FAST : le pipeline s'arrête immédiatement si Quality Gate KO
+                // Principe obligatoire : 'le pipeline doit échouer si seuil non atteint'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+ 
+        // ── STAGE 4 : SCAN DES DÉPENDANCES — OWASP ──────────────────
+        // Déclencheur : après analyse qualité
+        // Artefact produit : rapport HTML CVE
+        // Condition de passage : aucune CVE CRITICAL non gérée
+        stage('Scan dépendances - OWASP') {
+            steps {
+                echo '=== STAGE 4 : Détection de CVE dans les librairies ==='
+                sh 'mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=9'
+                // -DfailBuildOnCVSS=9 : échec si CVSS >= 9 (CRITICAL)
+                // Le rapport est généré dans target/dependency-check-report.html
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportName: 'OWASP Dependency Check',
+                        reportDir: 'target',
+                        reportFiles: 'dependency-check-report.html',
+                        keepAll: true
+                    ])
+                }
+            }
+        }
+ 
+        // ── STAGE 5 : BUILD IMAGE DOCKER ──────────────────────────────
+        // Déclencheur : après scan des dépendances
+        // Artefact produit : image Docker taguée avec le numéro de build
+        // Condition de passage : image construite sans erreur
+        stage('Build image Docker') {
+            steps {
+                echo '=== STAGE 5 : Construction de l image Docker ==='
+                sh """
+                    docker build \
+                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                        --no-cache \
+                        -t ${APP_IMAGE} .
+                    // --no-cache : garantit une image fraîche sans couche obsolète
+                    // Dockerfile doit utiliser un user non-root (sécurité DevSecOps)
+                """
+            }
+        }
+ 
+        // ── STAGE 6 : SCAN IMAGE DOCKER — Trivy ──────────────────────
+        // Déclencheur : après build de l'image
+        // Artefact produit : rapport de vulnérabilités
+        // Condition de passage : aucune vulnérabilité HIGH ou CRITICAL
+        stage('Scan Docker - Trivy') {
+            steps {
+                echo '=== STAGE 6 : Scan de sécurité de l image Docker ==='
+                sh """
+                    trivy image \
+                        --exit-code 1 \
+                        --severity HIGH,CRITICAL \
+                        --format table \
+                        --output trivy-report.txt \
+                        ${APP_IMAGE}
+                    // --exit-code 1 : le pipeline ÉCHOUE si vulnérabilité trouvée
+                    // Principe fail-fast obligatoire respecté
+                """
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-report.txt'
+                }
+            }
+        }
+ 
+        // ── STAGE 7 : PUSH REGISTRY ───────────────────────────────────
+        // Déclencheur : après scan Trivy OK
+        // Artefact produit : image dans le registry interne
+        // Condition de passage : push réussi (scan de sécurité OK)
+        stage('Push registry') {
+            steps {
+                echo '=== STAGE 7 : Push de l image dans le registry ==='
+                sh """
+                    # Authentification via secret Jenkins (jamais en clair)
+                    echo ${DOCKER_CREDS_PSW} | docker login ${DOCKER_REGISTRY} \
+                         -u ${DOCKER_CREDS_USR} --password-stdin
+                                             docker push ${APP_IMAGE}
+                    # Taguer aussi comme 'latest' pour référence
+                    docker tag ${APP_IMAGE} ${DOCKER_REGISTRY}/monapp:latest
+                    docker push ${DOCKER_REGISTRY}/monapp:latest
+                """
+            }
+        }
+ 
+        // ── STAGE 8 : DEPLOY STAGING ──────────────────────────────────
+        // Déclencheur : après push registry (branches develop et feature/*)
+        // Artefact produit : environnement staging mis à jour
+        // Condition de passage : tests E2E OK
+        stage('Deploy staging') {
+            // Ce stage ne s'exécute que sur develop et les branches feature
+            when {
+                anyOf {
+                    branch 'develop'
+                    branch 'feature/*'
+                    branch 'hotfix/*'
+                }
+            }
+            steps {
+                echo '=== STAGE 8 : Déploiement en staging ==='
+                sshagent(['ssh-key-staging']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no deploy@192.168.30.10 \
+                            'docker pull ${APP_IMAGE} && \
+                             docker stop monapp || true && \
+                             docker run -d --rm --name monapp \
+                                 -e DB_PASSWORD=${DB_PASSWORD} \
+                                 -p 8080:8080 ${APP_IMAGE}'
+                        # Attendre que l'application démarre
+                        sleep 15
+                        # Tests E2E smoke test
+                        curl -f http://staging.internal:8080/health
+                    """
+                }
+            }
+        }
+ 
+        // ── STAGE 9 : DEPLOY PRODUCTION ───────────────────────────────
+        // Déclencheur : tag Git vX.Y.Z OU validation manuelle (Go/No-Go)
+        // Artefact produit : application en production mise à jour
+        // Condition de passage : validation humaine obligatoire
+        stage('Deploy production') {
+            when {
+                // Uniquement sur la branche main avec un tag de version
+                allOf {
+                    branch 'main'
+                    buildingTag()
+                }
+            }
+            steps {
+                echo '=== STAGE 9 : Validation Go/No-Go avant déploiement production ==='
+                // Pause obligatoire : un humain doit valider avant de passer en prod
+                timeout(time: 30, unit: 'MINUTES') {
+                    input message: 'Déployer en PRODUCTION ?', ok: 'Go !',
+                          submitter: 'admin,lead-devops'  // Seuls les admins peuvent valider
+                }
+                sshagent(['ssh-key-prod']) {
+                    sh """
+                        ssh -o StrictHostKeyChecking=no deploy@192.168.40.10 \
+                            'docker pull ${APP_IMAGE} && \
+                             docker stop monapp || true && \
+                             docker run -d --rm --name monapp \
+                                 -e DB_PASSWORD=${DB_PASSWORD} \
+                                 -p 8080:8080 ${APP_IMAGE}'
+                        curl -f http://prod.internal:8080/health
+                    """
+                }
+            }
+        }
+ 
+    } // fin stages
+ 
+    // ════════════════════════════════════════════════════════════════
+    // POST-ACTIONS — exécutées après tous les stages
+    // ════════════════════════════════════════════════════════════════
+    post {
+ 
+        always {
+            // Conservation de TOUS les artefacts (traçabilité obligatoire)
+            archiveArtifacts artifacts: 'target/*.jar, target/*.html, trivy-report.txt',
+                              allowEmptyArchive: true
+            // Nettoyage du workspace après build
+            cleanWs()
+        }
+ 
+        success {
+            echo '✅ Pipeline terminé avec succès.'
+            // Notification Slack ou e-mail en cas de succès (optionnel)
+        }
+ 
+        failure {
+            // Alerte immédiate en cas d'échec — traçabilité et réactivité
+            mail to: 'devops@entreprise.com',
+                 subject: "❌ PIPELINE FAILED - Build ${BUILD_NUMBER} (${BRANCH_NAME})",
+                 body: """
+                     Le build ${BUILD_NUMBER} sur la branche ${BRANCH_NAME} a échoué.
+                     Voir les logs : ${BUILD_URL}
+                     Durée : ${currentBuild.durationString}
+                 """
+        }
+ 
+        unstable {
+            echo '⚠️ Pipeline instable (tests partiellement échoués).'
+        }
+ 
+    } // fin post
+ 
+} // fin pipeline
+
+
+
+
