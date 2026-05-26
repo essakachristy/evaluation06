@@ -243,28 +243,33 @@ pipeline {
     // ════════════════════════════════════════════════════════════════
     // POST-ACTIONS — exécutées après tous les stages
     // ════════════════════════════════════════════════════════════════
+   // ════════════════════════════════════════════════════════════════
+    // POST-ACTIONS — exécutées après tous les stages
+    // ════════════════════════════════════════════════════════════════
     post {
  
         always {
-            // Conservation de TOUS les artefacts (traçabilité obligatoire)
-            archiveArtifacts artifacts: 'target/*.jar, target/*.html, trivy-report.txt',
-                              allowEmptyArchive: true
-            // Nettoyage du workspace après build
-            cleanWs()
+            // Le bloc node{} force Jenkins à réallouer un espace si le contexte a été perdu
+            node {
+                // Conservation de TOUS les artefacts
+                archiveArtifacts artifacts: 'target/*.jar, target/*.html, trivy-report.txt',
+                                 allowEmptyArchive: true
+                // Nettoyage du workspace après build
+                cleanWs()
+            }
         }
  
         success {
             echo '✅ Pipeline terminé avec succès.'
-            // Notification Slack ou e-mail en cas de succès (optionnel)
         }
  
         failure {
-            // Alerte immédiate en cas d'échec — traçabilité et réactivité
+            // Remplacement de BRANCH_NAME qui n'existait pas par une alternative sûre
             mail to: 'devops@entreprise.com',
-                 subject: "❌ PIPELINE FAILED - Build ${BUILD_NUMBER} (${BRANCH_NAME})",
+                 subject: "❌ PIPELINE FAILED - Build ${env.BUILD_NUMBER}",
                  body: """
-                     Le build ${BUILD_NUMBER} sur la branche ${BRANCH_NAME} a échoué.
-                     Voir les logs : ${BUILD_URL}
+                     Le build ${env.BUILD_NUMBER} a échoué.
+                     Voir les logs : ${env.BUILD_URL}
                      Durée : ${currentBuild.durationString}
                  """
         }
@@ -274,9 +279,3 @@ pipeline {
         }
  
     } // fin post
- 
-} // fin pipeline
-
-
-
-
