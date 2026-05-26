@@ -53,61 +53,6 @@ pipeline {
                 echo '=== STAGE 2 : Exécution des tests unitaires ==='
                 sh 'mvn test'
                 // JaCoCo mesure la couverture — configuré dans pom.xml
-                pipeline {
- 
-    // ── Agent : exécution sur n'importe quel nœud Jenkins disponible
-    agent any
- 
-    // ── Options globales du pipeline ────────────────────────────────
-    options {
-        timestamps()               // Horodatage de chaque ligne de log
-        timeout(time: 60, unit: 'MINUTES')  // Abandon si durée > 1h
-        buildDiscarder(logRotator(numToKeepStr: '20'))  // Garder 20 derniers builds
-        disableConcurrentBuilds()  // Interdit 2 builds simultanés sur la même branche
-    }
- 
-    // ── Variables d'environnement — AUCUN secret en clair ───────────
-    environment {
-        DOCKER_REGISTRY = 'registry.internal'
-        APP_IMAGE       = "${DOCKER_REGISTRY}/monapp:${BUILD_NUMBER}"
-        SONAR_PROJECT   = 'monapp'
-        SONAR_URL       = 'http://sonarqube.internal:9000'
- 
-        // credentials() injecte les secrets depuis Jenkins Credentials Manager
-        // Jenkins masque automatiquement les valeurs dans les logs (affichées ****)
-        DOCKER_CREDS    = credentials('docker-registry-creds')
-        SSH_STAGING     = credentials('ssh-key-staging')
-        SSH_PROD        = credentials('ssh-key-prod')
-        DB_PASSWORD     = credentials('db-prod-password')
-    }
- 
-    // ════════════════════════════════════════════════════════════════
-    // STAGES DU PIPELINE
-    // ════════════════════════════════════════════════════════════════
-    stages {
- 
-        // ── STAGE 1 : BUILD ─────────────────────────────────────────
-        // Déclencheur : Push ou Merge Request sur toute branche
-        // Artefact produit : fichier .jar compilé
-        // Condition de passage : build sans erreur de compilation
-        stage('Build') {
-            steps {
-                echo '=== STAGE 1 : Compilation du code source ==='
-                sh 'mvn clean package -DskipTests'
-                // -DskipTests : les tests sont exécutés dans le stage dédié
-                // L'artefact target/monapp.jar est produit ici
-            }
-        }
- 
-        // ── STAGE 2 : TESTS UNITAIRES ────────────────────────────────
-        // Déclencheur : après build réussi
-        // Artefact produit : rapport JUnit (target/surefire-reports/)
-        // Condition de passage : couverture de code >= 80%
-        stage('Tests unitaires') {
-            steps {
-                echo '=== STAGE 2 : Exécution des tests unitaires ==='
-                sh 'mvn test'
-                // JaCoCo mesure la couverture — configuré dans pom.xml
                             }
             post {
                 always {
